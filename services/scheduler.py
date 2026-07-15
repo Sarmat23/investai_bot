@@ -10,6 +10,7 @@ from database import Database
 from services.analysis import analyze, DISCLAIMER
 from services.moex import MoexClient
 from services.news import NewsService
+from services.telegram_utils import chunk_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +66,15 @@ async def send_digest_to_user(
             block = f"<b>{holding['ticker']}</b>: не удалось получить данные."
         blocks.append(block)
 
-    text = "📊 <b>Сводка по вашему портфелю</b>\n\n" + "\n\n".join(blocks) + DISCLAIMER
-    try:
-        await bot.send_message(telegram_id, text, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception as e:
-        logger.warning("Не удалось отправить сводку пользователю %s: %s", telegram_id, e)
+    messages = chunk_blocks(
+        blocks, header="📊 <b>Сводка по вашему портфелю</b>", footer=DISCLAIMER
+    )
+    for chunk in messages:
+        try:
+            await bot.send_message(telegram_id, chunk, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception as e:
+            logger.warning("Не удалось отправить сводку пользователю %s: %s", telegram_id, e)
+            break
 
 
 async def run_digest_job(bot: Bot, db: Database, config: Config) -> None:
