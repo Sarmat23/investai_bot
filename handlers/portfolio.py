@@ -16,6 +16,36 @@ router = Router(name="portfolio")
 
 ASSET_TYPE_LABEL = {"bond": "Облигация", "stock": "Акция"}
 
+# Тексты кнопок главного меню — если пользователь нажал одну из них,
+# находясь внутри шага заполнения формы (ввод тикера/количества),
+# это нужно воспринимать как явное прерывание формы, а не как ввод данных.
+MENU_BUTTON_TEXTS = {
+    "➕ Добавить бумагу",
+    "📊 Мой портфель",
+    "🗑 Удалить бумагу",
+    "📰 Сводка сейчас",
+}
+
+
+def is_form_input(message: Message) -> bool:
+    """
+    True, если сообщение похоже на реальный ввод данных формы (тикер/количество),
+    а не на нажатие кнопки меню или команду вроде /cancel.
+
+    Без этой проверки хендлеры шагов формы (без F.text-фильтра) перехватывали
+    вообще любое следующее сообщение, включая нажатия кнопок и /cancel — из-за
+    этого при неверном тикере пользователь застревал в форме навсегда и любое
+    действие отвечало "не удалось найти такую бумагу".
+    """
+    text = (message.text or "").strip()
+    if not text:
+        return False
+    if text.startswith("/"):
+        return False
+    if text in MENU_BUTTON_TEXTS:
+        return False
+    return True
+
 
 # ---------------------------------------------------------------------- #
 # Добавление бумаги
@@ -38,7 +68,7 @@ async def choose_type(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(AddHolding.entering_ticker)
+@router.message(AddHolding.entering_ticker, is_form_input)
 async def enter_ticker(message: Message, state: FSMContext) -> None:
     ticker = message.text.strip().upper()
     data = await state.get_data()
@@ -51,7 +81,7 @@ async def enter_ticker(message: Message, state: FSMContext) -> None:
     if info is None:
         await message.answer(
             "Не удалось найти такую бумагу на MOEX. Проверьте тикер и попробуйте ещё раз, "
-            "или /cancel для отмены."
+            "или отправьте /cancel либо нажмите любую кнопку меню, чтобы отменить добавление."
         )
         return
 
@@ -62,7 +92,7 @@ async def enter_ticker(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(AddHolding.entering_quantity)
+@router.message(AddHolding.entering_quantity, is_form_input)
 async def enter_quantity(message: Message, state: FSMContext, db: Database) -> None:
     raw = message.text.strip().replace(",", ".")
     try:
@@ -70,7 +100,10 @@ async def enter_quantity(message: Message, state: FSMContext, db: Database) -> N
         if quantity <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("Введите положительное число, например 10 или 1000.")
+        await message.answer(
+            "Введите положительное число, например 10 или 1000. "
+            "Либо /cancel или любая кнопка меню — чтобы отменить добавление."
+        )
         return
 
     data = await state.get_data()
