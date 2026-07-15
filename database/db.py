@@ -47,6 +47,45 @@ class Database:
         async with aiosqlite.connect(self.path) as db:
             await db.executescript(SCHEMA)
             await db.commit()
+            await self._merge_duplicate_holdings(db)
+            # Уникальный индекс защищает от повторного появления дублей на
+            # уровне БД (например, при параллельных запросах). Создаём его
+            # только после объединения дублей выше, иначе CREATE UNIQUE INDEX
+            # упадёт с ошибкой на уже существующих повторах.
+            await db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_portfolio_unique "
+                "ON portfolio (user_id, ticker, asset_type)"
+            )
+            await db.commit()
+
+    @staticmethod
+    async def _merge_duplicate_holdings(db: aiosqlite.Connection) -> None:
+        """
+        Разовая миграция для баз, созданных до появления уникальности по
+        (user_id, ticker, asset_type): схлопывает задублированные строки одной
+        бумаги в одну, суммируя количество, и оставляет самую раннюю запись.
+        """
+        cur = await db.execute(
+            """
+            SELECT user_id, ticker, asset_type, MIN(id) AS keep_id, SUM(quantity) AS total_qty
+            FROM portfolio
+            GROUP BY user_id, ticker, asset_type
+            HAVING COUNT(*) > 1
+            """
+        )
+        duplicate_groups = await cur.fetchall()
+        if not duplicate_groups:
+            return
+
+        for user_id, ticker, asset_type, keep_id, total_qty in duplicate_groups:
+            await db.execute(
+                "UPDATE portfolio SET quantity = ? WHERE id = ?", (total_qty, keep_id)
+            )
+            await db.execute(
+                "DELETE FROM portfolio WHERE user_id = ? AND ticker = ? AND asset_type = ? AND id != ?",
+                (user_id, ticker, asset_type, keep_id),
+            )
+        await db.commit()
 
     # ------------------------------------------------------------------ #
     # Пользователи
@@ -89,16 +128,42 @@ class Database:
         name: str,
         asset_type: str,
         quantity: float,
-    ) -> int:
+    ) -> tuple[int, float, bool]:
+        """
+        Добавляет бумагу в портфель. Если у пользователя уже есть такая же
+        бумага (совпадают ticker и asset_type) — не создаёт новую строку,
+        а увеличивает существующее количество.
+
+        Возвращает (holding_id, итоговое_количество, was_merged), где
+        was_merged=True означает, что количество было прибавлено к уже
+        существующей позиции, а False — что создана новая строка.
+        """
+        ticker = ticker.upper()
         async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "SELECT id, quantity FROM portfolio WHERE user_id = ? AND ticker = ? AND asset_type = ?",
+                (user_id, ticker, asset_type),
+            )
+            existing = await cur.fetchone()
+
+            if existing:
+                holding_id, existing_qty = existing
+                new_qty = existing_qty + quantity
+                await db.execute(
+                    "UPDATE portfolio SET quantity = ?, name = ? WHERE id = ?",
+                    (new_qty, name, holding_id),
+                )
+                await db.commit()
+                return holding_id, new_qty, True
+
             now = dt.datetime.utcnow().isoformat()
             cur = await db.execute(
                 "INSERT INTO portfolio (user_id, ticker, name, asset_type, quantity, added_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, ticker.upper(), name, asset_type, quantity, now),
+                (user_id, ticker, name, asset_type, quantity, now),
             )
             await db.commit()
-            return cur.lastrowid
+            return cur.lastrowid, quantity, False
 
     async def get_holdings(self, user_id: int) -> list[dict]:
         async with aiosqlite.connect(self.path) as db:

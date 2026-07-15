@@ -113,7 +113,7 @@ async def enter_quantity(message: Message, state: FSMContext, db: Database) -> N
         username=message.from_user.username,
         full_name=message.from_user.full_name,
     )
-    await db.add_holding(
+    _holding_id, total_qty, was_merged = await db.add_holding(
         user_id=user_id,
         ticker=data["ticker"],
         name=data["name"],
@@ -121,10 +121,14 @@ async def enter_quantity(message: Message, state: FSMContext, db: Database) -> N
         quantity=quantity,
     )
     await state.clear()
-    await message.answer(
-        f"Добавлено: {data['name']} ({data['ticker']}) — {quantity:g} шт.",
-        reply_markup=main_menu_kb(),
-    )
+    if was_merged:
+        text = (
+            f"У вас уже была эта бумага в портфеле — количество суммировано.\n"
+            f"{data['name']} ({data['ticker']}): теперь {total_qty:g} шт."
+        )
+    else:
+        text = f"Добавлено: {data['name']} ({data['ticker']}) — {total_qty:g} шт."
+    await message.answer(text, reply_markup=main_menu_kb())
 
 
 # ---------------------------------------------------------------------- #

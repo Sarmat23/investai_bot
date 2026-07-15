@@ -6,7 +6,9 @@ API не требует ключа. Используется для получе
 доходности облигаций и истории цен акций/облигаций.
 """
 
+import asyncio
 import datetime as dt
+import json
 import logging
 from typing import Optional
 
@@ -20,6 +22,19 @@ MARKET_BY_TYPE = {
     "bond": "bonds",
     "stock": "shares",
 }
+
+
+MOEX_TIMEOUT = aiohttp.ClientTimeout(total=12, connect=5, sock_connect=5, sock_read=8)
+MOEX_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PortfolioBot/1.0)"}
+MOEX_MAX_ATTEMPTS = 4
+MOEX_RETRY_DELAY_SEC = 2
+
+# Ошибки, при которых имеет смысл повторить запрос: сетевые сбои/таймауты,
+# а также битый/неполный JSON в ответе (MOEX иногда отдаёт 200 OK с
+# оборванным телом при сетевых проблемах — resp.json() в этом случае кидает
+# json.JSONDecodeError, который является ValueError, а не aiohttp.ClientError,
+# поэтому его нужно перечислить отдельно).
+RETRYABLE_ERRORS = (asyncio.TimeoutError, aiohttp.ClientError, json.JSONDecodeError)
 
 
 def _rows_from_block(payload: dict, block: str) -> list[dict]:
@@ -48,9 +63,25 @@ class MoexClient:
 
     async def _get_json(self, url: str, params: dict | None = None) -> dict:
         assert self._session is not None
-        async with self._session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+        last_error: Exception | None = None
+        for attempt in range(1, MOEX_MAX_ATTEMPTS + 1):
+            try:
+                async with self._session.get(
+                    url, params=params, timeout=MOEX_TIMEOUT, headers=MOEX_HEADERS
+                ) as resp:
+                    resp.raise_for_status()
+                    return await resp.json()
+            except RETRYABLE_ERRORS as e:
+                last_error = e
+                if attempt < MOEX_MAX_ATTEMPTS:
+                    logger.info(
+                        "Попытка %s/%s к MOEX не удалась (%s: %s), повтор через %sс: %s",
+                        attempt, MOEX_MAX_ATTEMPTS, type(e).__name__, e or "нет деталей",
+                        MOEX_RETRY_DELAY_SEC, url,
+                    )
+                    await asyncio.sleep(MOEX_RETRY_DELAY_SEC)
+        assert last_error is not None
+        raise last_error
 
     async def get_security_info(self, ticker: str, asset_type: str) -> Optional[dict]:
         """
@@ -66,7 +97,10 @@ class MoexClient:
         try:
             payload = await self._get_json(url)
         except Exception as e:
-            logger.warning("Ошибка запроса к MOEX для %s: %s", ticker, e)
+            logger.warning(
+                "Ошибка запроса к MOEX для %s (%s): %s: %s",
+                ticker, url, type(e).__name__, e or repr(e),
+            )
             return None
 
         sec_rows = _rows_from_block(payload, "securities")
@@ -98,7 +132,10 @@ class MoexClient:
         try:
             payload = await self._get_json(url, params=params)
         except Exception as e:
-            logger.warning("Ошибка запроса истории MOEX для %s: %s", ticker, e)
+            logger.warning(
+                "Ошибка запроса истории MOEX для %s (%s): %s: %s",
+                ticker, url, type(e).__name__, e or repr(e),
+            )
             return None
 
         rows = _rows_from_block(payload, "history")

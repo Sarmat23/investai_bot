@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import aiohttp
@@ -24,8 +25,10 @@ async def build_holding_block(
     asset_type = holding["asset_type"]
     quantity = holding["quantity"]
 
-    info = await moex.get_security_info(ticker, asset_type)
-    weekly_change = await moex.get_weekly_change_pct(ticker, asset_type)
+    info, weekly_change = await asyncio.gather(
+        moex.get_security_info(ticker, asset_type),
+        moex.get_weekly_change_pct(ticker, asset_type),
+    )
 
     display_name = info["name"] if info else holding.get("name") or ticker
     lines = [f"<b>{display_name} ({ticker})</b> — у вас {quantity:g} шт."]
