@@ -1,15 +1,14 @@
-FROM python:3.11-slim
+# Токен бота, полученный у @BotFather
+BOT_TOKEN=123456:ВАШ_ТОКЕН
 
-WORKDIR /app
+# Ключ NewsAPI.org (необязательно; если пусто — используется бесплатный Google News RSS)
+NEWS_API_KEY=
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Путь к файлу базы данных SQLite.
+# ВАЖНО: держите этот файл вне директории с кодом (или в отдельной подпапке,
+# как здесь), чтобы обновление бота (git pull / пересборка Docker-образа)
+# не затирало уже накопленные данные пользователей.
+DB_PATH=data/bot.db
 
-COPY . .
-
-# Директория для персистентных данных (SQLite и т.д.). Смонтируйте сюда
-# внешний том при запуске — иначе данные исчезнут при пересоздании контейнера.
-RUN mkdir -p /app/data
-VOLUME ["/app/data"]
-
-CMD ["python", "main.py"]
+# Раз в сколько часов присылать сводку по портфелю
+CHECK_INTERVAL_HOURS=6
