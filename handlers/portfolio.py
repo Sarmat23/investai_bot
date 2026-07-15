@@ -10,6 +10,7 @@ from services.analysis import DISCLAIMER
 from services.moex import MoexClient
 from services.news import NewsService
 from services.scheduler import build_holding_block
+from services.telegram_utils import chunk_blocks
 from states import AddHolding
 
 router = Router(name="portfolio")
@@ -205,6 +206,9 @@ async def send_digest_now(message: Message, db: Database, config: Config) -> Non
         for h in holdings:
             blocks.append(await build_holding_block(moex, news, h))
 
-    text = "📊 <b>Сводка по вашему портфелю</b>\n\n" + "\n\n".join(blocks) + DISCLAIMER
     await status_msg.delete()
-    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    messages = chunk_blocks(
+        blocks, header="📊 <b>Сводка по вашему портфелю</b>", footer=DISCLAIMER
+    )
+    for chunk in messages:
+        await message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
